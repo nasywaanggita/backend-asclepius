@@ -1,47 +1,62 @@
 const express = require("express");
-const multer = require("multer");
-const { v4: uuidv4 } = require("uuid");
+const { Storage } = require("@google-cloud/storage");
+const tf = require("@tensorflow/tfjs-node");
+
 const app = express();
-const port = 3000;
+const storage = new Storage();
 
-const upload = multer({
-  dest: "uploads/",
-  limits: { fileSize: 1000000 },
+const bucketName = "asclepius-ml-models";
+const modelFileName = "model.json"; // Ganti dengan nama file model Anda
+const modelFilePath = `https://storage.googleapis.com/${bucketName}/${modelFileName}`;
+
+let model;
+
+async function loadModel() {
+  try {
+    model = await tf.loadGraphModel(modelFilePath);
+    console.log("Model loaded successfully");
+  } catch (error) {
+    console.error("Error loading model:", error);
+    throw error;
+  }
+}
+
+app.get("/load-model", async (req, res) => {
+  try {
+    await loadModel();
+    res.status(200).send("Model loaded successfully");
+  } catch (error) {
+    res.status(500).send("Failed to load model");
+  }
 });
 
-app.post("/predict", upload.single("image"), (req, res) => {
-  if (!req.file) {
-    return res.status(400).json({
-      status: "fail",
-      message: "Terjadi kesalahan dalam melakukan prediksi",
-    });
+app.post("/predict", express.json(), async (req, res) => {
+  if (!model) {
+    await loadModel();
   }
 
-  const predictionResult = "Cancer";
-  const suggestion = "Segera periksa ke dokter!";
+  try {
+    const { imageData } = req.body;
+    const inputTensor = tf.node.decodeImage(Buffer.from(imageData, "base64"));
+    const prediction = model.predict(inputTensor.expandDims(0));
+    const result = prediction.dataSync()[0];
+    const classification = result > 0.5 ? "Cancer" : "Non-cancer";
 
-  res.json({
-    status: "success",
-    message: "Model is predicted successfully",
-    data: {
-      id: uuidv4(),
-      result: predictionResult,
-      suggestion: suggestion,
-      createdAt: new Date().toISOString(),
-    },
-  });
-});
-
-app.use((err, req, res, next) => {
-  if (err.code === "LIMIT_FILE_SIZE") {
-    return res.status(413).json({
+    res.status(200).json({
+      status: "success",
+      message: "Prediction made successfully",
+      result: classification,
+    });
+  } catch (error) {
+    res.status(500).json({
       status: "fail",
-      message: "Payload content length greater than maximum allowed: 1000000",
+      message: "Failed to make prediction",
+      error: error.message,
     });
   }
-  next(err);
 });
 
-app.listen(port, () => {
-  console.log(`Server berjalan di http://localhost:${port}`);
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => {
+  console.log(`Server is running on port ${PORT}`);
 });
